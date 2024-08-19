@@ -3,6 +3,7 @@ import os
 import sys
 import pandas as pd
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+import torch.nn.functional as F
 from transformers import BertModel
 
 from scripts.classes.model import *
@@ -10,6 +11,8 @@ from scripts.trainer import Trainer, PseudoLabelsTrainer
 from scripts.utils import *
 from scripts.prepare_data import *
 from torch.utils.data import DataLoader, ConcatDataset
+
+from sklearn.metrics import classification_report, confusion_matrix
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -23,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO)
 
 
-def evaluate(self, args, model, val_dataloader):
+def evaluate(args, model, train_path, val_dataloader, path_results, device="cuda"):
     """After the completion of each training epoch, measure the model's performance
     on our validation set.
     """
@@ -37,15 +40,17 @@ def evaluate(self, args, model, val_dataloader):
     all_logits = []
     all_labels = []
 
+    map_labels, _ = get_cat_code(train_path)
+
     # For each batch in our validation set...
     for batch in val_dataloader:
         # Load batch to GPU
         #b_input_ids, b_attn_mask, b_labels = tuple(t.to(device) for t in batch)
-        b_input_ids = batch['input_ids'].to(self.device)
-        b_attn_mask = batch['attention_mask'].to(self.device)
-        pos_tags = batch['pos_tags'].to(self.device)
+        b_input_ids = batch['input_ids'].to(device)
+        b_attn_mask = batch['attention_mask'].to(device)
+        pos_tags = batch['pos_tags'].to(device)
         b_labels = batch['labels'].type(torch.LongTensor)
-        b_labels = b_labels.to(self.device)
+        b_labels = b_labels.to(device)
         # Compute logits
         with torch.no_grad():
             if args.use_pos: logits = model(b_input_ids, b_attn_mask, pos_tags)
@@ -67,14 +72,13 @@ def evaluate(self, args, model, val_dataloader):
 
     unique_labels = list(set(list(all_labels) + list(preds)))
     target_names = []
-    for cod in list(self.map_labels.keys()):
-        if cod in unique_labels: target_names.append(self.map_labels[cod])
+    for cod in list(map_labels.keys()):
+        if cod in unique_labels: target_names.append(map_labels[cod])
     df_report = pd.DataFrame(classification_report(list(all_labels), preds, target_names=target_names, output_dict=True))
     conf_df = pd.DataFrame(confusion_matrix(list(all_labels), preds))
-    #df_report.to_csv(path_report, index=False)
+    df_report.to_csv(path_results, index=False)
     #conf_df.to_csv(path_conf, index=False)
 
-    save_results(df_report.T, self.results_path, self.model_name, comp_name, self.use_pos, self.use_context, self.use_trans, self.use_weights, self.batch_size, epoch_i, self.lr_rate, self.resample_perc, get_n_labels(self.train_path), self.fold)
     logger.info(classification_report(all_labels, preds, target_names=target_names))
     df_report = df_report.T
 
@@ -89,13 +93,18 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--path_to_model",
-        default='src/data/outputs/models/',
+        default='src/data/outputs/models/best_model',
         help="Path to save model models",
     )
     parser.add_argument(
         "--test_path",
         default=r"src/data/data/final_test_porttinari.csv",
         help="Path to do the test",
+    )
+    parser.add_argument(
+        "--train_path",
+        default=r"src/data/data/final_train_porttinari.csv",
+        help="Path to do the train",
     )
 
     parser.add_argument(
@@ -137,7 +146,17 @@ if __name__ == "__main__":
         "--freeze_bert",
         default=False,
         help="Freeze bert during finetuning",
-    )          
+    )
+    parser.add_argument(
+        "--use_pos",
+        default=True,
+        help="Pos",
+    )
+    parser.add_argument(
+        "--use_context",
+        default=True,
+        help="Context",
+    )                  
 
     args = parser.parse_args()
 
@@ -152,6 +171,7 @@ if __name__ == "__main__":
     logger.info("Train model: {}".format(args.pretrained_model))
     if args.use_pos: model = BertClassifierPOS(pretrained_model, args.in_dim, args.hidden_dim, args.n_labels, args.pos_count, args.freeze_bert)
     else: model = BertClassifier(pretrained_model, args.in_dim, args.hidden_dim, args.n_labels, args.freeze_bert)
-    model.load_state_dict(torch.load(args.path_to_model))
+    model = torch.load(args.path_to_model)
+    #model.load_state_dict(torch.load(args.path_to_model))
     model.eval()
-    evaluate(args, model, test_dataloader)
+    evaluate(args, model, args.train_path, test_dataloader, args.path_to_results)
